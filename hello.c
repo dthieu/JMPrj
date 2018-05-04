@@ -5423,4 +5423,295 @@ int m4vac_vlc_pred_i4x4(int nA, int nB);
 int m4vac_vlc_nC(int nA, int nB);
 
     // end vlc.h
+/*--------------------------------------------------------------------------*/
+/* SH73xx MPEG-4 Encoder Module Ver.1.0                                     */
+/*	Copyright (C) Renesas Technology Corp., 2003. All rights reserved.		*/
+/*--------------------------------------------------------------------------*/
+/*  m4vae_bitstream.c :                                                     */
+/*--------------------------------------------------------------------------*/
+/*  1.000  2002/10/01  start codes                                          */
+/*  1.000  2002/10/01                                                       */
+/*--------------------------------------------------------------------------*/
+#include "mpeg4venc.h"
+
+static long strmBuff;	// 32bit buffer
+static long offsetInDWord = 0;
+#ifdef iVCP1E_HM_SPEC
+long hd_ems_ins_flag = 0;
+static unsigned long prev_buf = 0xffff;
+#endif
+
+// Array to be used for masking the values to be put into the buffer
+static const long BitMask[32] = {
+    0x00000000, 0x80000000, 0xc0000000, 0xe0000000, 
+    0xf0000000, 0xf8000000, 0xfc000000, 0xfe000000, 
+    0xff000000, 0xff800000, 0xffc00000, 0xffe00000, 
+    0xfff00000, 0xfff80000, 0xfffc0000, 0xfffe0000, 
+    0xffff0000, 0xffff8000, 0xffffc000, 0xffffe000, 
+    0xfffff000, 0xfffff800, 0xfffffc00, 0xfffffe00, 
+    0xffffff00, 0xffffff80, 0xffffffc0, 0xffffffe0, 
+    0xfffffff0, 0xfffffff8, 0xfffffffc, 0xfffffffe
+};
+
+int m4vae_em_ins(unsigned long ibuf, long *len, unsigned char *obuf) {
+    long i = 0;
+    long olen = *len;
+
+    obuf[0] = (ibuf >> 0) & 0xff;
+    obuf[1] = (ibuf >> 8) & 0xff;
+    obuf[2] = (ibuf >> 16) & 0xff;
+    obuf[3] = (ibuf >> 24) & 0xff;
+
+    for (i = *len; i < 6; i++) {
+        obuf[i] = 0xff;
+    }
+
+    if (prev_buf == 0) {
+        if (obuf[0] < 0x4) {
+            for (i = 4; i > 0; i--) {
+                obuf[i] = obuf[i - 1];
+            }
+            obuf[0] = 0x03;
+            olen++;
+            if (obuf[1] == 0 && obuf[2] == 0 && obuf[3] < 4) {
+                for (i = 5; i > 3; i--) {
+                    obuf[i] = obuf[i - 1];
+                }
+                obuf[3] = 0x03;
+                olen++;
+            }
+            else if (obuf[2] == 0 && obuf[3] == 0 && obuf[4] < 4) {
+                for (i = 5; i > 4; i--) {
+                    obuf[i] = obuf[i - 1];
+                }
+                obuf[4] = 0x03;
+                olen++;
+            }
+        }
+        else if (obuf[1] == 0 && obuf[2] == 0 && obuf[3] < 4) {
+            for (i = 5; i > 3; i--) {
+                obuf[i] = obuf[i - 1];
+            }
+            obuf[3] = 0x03;
+            olen++;
+        }
+    }
+    else if ((prev_buf & 0xff) == 0) {
+        if (obuf[0] == 0 && obuf[1] < 4) {
+            for (i = 5; i > 1; i--) {
+                obuf[i] = obuf[i - 1];
+            }
+            obuf[1] = 0x03;
+            olen++;
+            if (obuf[2] == 0 && obuf[3] == 0 && obuf[4] < 4) {
+                for (i = 5; i > 4; i--) {
+                    obuf[i] = obuf[i - 1];
+                }
+                obuf[4] = 0x03;
+                olen++;
+            }
+        }
+        else if (obuf[1] == 0 && obuf[2] == 0 && obuf[3] < 4) {
+            for (i = 5; i > 3; i--) {
+                obuf[i] = obuf[i - 1];
+            }
+            obuf[3] = 0x03;
+            olen++;
+        }
+    }
+    else if (obuf[0] == 0 && obuf[1] == 0 && obuf[2] < 4) {
+        for (i = 5; i > 2; i--) {
+            obuf[i] = obuf[i - 1];
+        }
+        obuf[2] = 0x03;
+        olen++;
+    }
+    else if (obuf[1] == 0 && obuf[2] == 0 && obuf[3] < 4) {
+        for (i = 5; i > 3; i--) {
+            obuf[i] = obuf[i - 1];
+        }
+        obuf[3] = 0x03;
+        olen++;
+    }
+    *len = olen;
+    return 1;
+}
+
+//<IM031225>
+int m4vae_putbits ( unsigned long  value, long length )
+{
+    long temp0;
+    long temp1;
+    unsigned long *buff;
+
+    buff = (unsigned long *)&strmBuff;
+    *buff &= BitMask[offsetInDWord];
+
+    temp0 = offsetInDWord + length;
+    temp1 = 32 - temp0;
+    if ( temp1 > 0 )
+    {
+        *buff |= (value << (temp1));
+        offsetInDWord = temp0;
+    }
+    else
+    {
+        temp1 =  - temp1; /* temp1 > 0 */
+        *buff |= (value >> temp1);
+#ifndef _BIG
+        {
+            unsigned long tmp = strmBuff;
+            *buff =  ((tmp & 0xFF000000) >> 24);
+            *buff |= ((tmp & 0x00FF0000) >> 8);
+            *buff |= ((tmp & 0x0000FF00) << 8);
+            *buff |= ((tmp & 0x000000FF) << 24);
+        }
+#endif
+        if (hd_ems_ins_flag == 1) {
+            unsigned char ems_buf[6] = { 0 };
+            long len = 4;
+            m4vae_em_ins(*buff, &len, ems_buf);
+            prev_buf = ((ems_buf[len-2] & 0xff) << 8) | (ems_buf[len-1] & 0xff);
+            m4vae_output_byte((char*)ems_buf, len);	// write Len byte
+            length += (len - 4)*8;
+        }
+        else {
+            m4vae_output_byte((char*)buff, 4);	// write 4 byte
+            prev_buf = ((*buff) >> 16) & 0xffff;
+        }
+        *buff = (value << (32 - temp1)); /* (32 - temp2) = (64 - length - offsetInDWord) */
+        offsetInDWord = temp1;
+    }      
+
+    return length;
+}
+
+
+//<IM040206>
+int m4vae_putstuffbitsmpeg4(long h264)
+{
+    int length = 0;
+    if (offsetInDWord == 0) {
+        strmBuff = 0;
+    }
+    strmBuff >>= (32 - offsetInDWord); 
+    strmBuff <<= (32 - offsetInDWord); 
+
+    if (h264){
+        strmBuff |= 1 << ((32 - offsetInDWord) - 1);
+    }else{
+        strmBuff |= ( (1 << ((32 - offsetInDWord) - 1)) - 1 );
+    }
+
+    offsetInDWord = ((offsetInDWord + 8) / 8) * 8; 
+
+    if(offsetInDWord == 32)
+    {
+        offsetInDWord = 0;
+#ifndef _BIG
+        {
+            unsigned long tmp = strmBuff;
+            strmBuff =  ((tmp & 0xFF000000) >> 24);
+            strmBuff |= ((tmp & 0x00FF0000) >> 8);
+            strmBuff |= ((tmp & 0x0000FF00) << 8);
+            strmBuff |= ((tmp & 0x000000FF) << 24);
+        }
+#endif
+
+        if (hd_ems_ins_flag == 1) {
+            unsigned char ems_buf[6] = { 0 };
+            long len = 4;
+            m4vae_em_ins(strmBuff, &len, ems_buf);
+            prev_buf = ((ems_buf[len - 2] & 0xff) << 8) | (ems_buf[len - 1] & 0xff);
+            m4vae_output_byte((char*)ems_buf, len);	// write Len byte
+            length = (len - 4) * 8;
+        }
+        else {
+            m4vae_output_byte((char*)&strmBuff, 4);	// write 4 byte
+            prev_buf = (strmBuff >> 16) & 0xffff;
+        }
+    }
+
+    return length;
+}
+
+int m4vae_flushbits(long h264)
+{
+    int length = 0;
+    length = m4vae_putstuffbitsmpeg4(h264);
+
+#ifndef _BIG
+    {
+        unsigned long tmp = strmBuff;
+        strmBuff =  ((tmp & 0xFF000000) >> 24);
+        strmBuff |= ((tmp & 0x00FF0000) >> 8);
+        strmBuff |= ((tmp & 0x0000FF00) << 8);
+        strmBuff |= ((tmp & 0x000000FF) << 24);
+    }
+#endif
+    if (hd_ems_ins_flag == 1) {
+        unsigned char ems_buf[6] = { 0 };
+        long len;
+        len = offsetInDWord >> 3;
+        m4vae_em_ins(strmBuff, &len, ems_buf);
+        prev_buf = ((ems_buf[len - 2] & 0xff) << 8) | (ems_buf[len - 1] & 0xff);
+        m4vae_output_byte((char*)ems_buf, len);	// write Len byte
+        length += (len - (offsetInDWord >> 3)) * 8;
+    }
+    else {
+        m4vae_output_byte((char*)&strmBuff, (offsetInDWord >> 3));
+        prev_buf = (strmBuff >> 16) & 0xffff;
+    }
+    offsetInDWord = 0;
+
+    return length;
+}
+
+
+//static long buff;	// 32bit buffer
+//
+//long m4vae_putbits(long code,long length)
+//{
+//    long out_code = 0;
+//    long count = 8;
+//    long shift;
+//
+//    code &= (1<<length) - 1;
+//    buff += length;
+//    while ( length > 0 ) {
+//        shift = (length - count > 0) ? count : length ;
+//        out_code = ((out_code << shift) | (code >> (length - shift))) & 255 ;
+//        length -= shift ;
+//        count  -= shift ;
+//        if(count == 0){
+//            count = 8 ;
+//            m4vae_output_byte((char*)&out_code, 1);
+//        }
+//    }
+//    return(count) ;
+//}
+//
+//void m4vae_putstuffbitsmpeg4(void)
+//{
+//
+//}
+// == end bitstream.c
+
+/*--------------------------------------------------------------------------*/
+/* SH73xx MPEG-4 Encoder Module Ver.1.0                                     */
+/*	Copyright (C) Renesas Technology Corp., 2003. All rights reserved.	*/
+/*--------------------------------------------------------------------------*/
+/*	mpeg4main.c : 						                					*/
+/*--------------------------------------------------------------------------*/
+/*  1.000  2002/10/01  start codes                                          */
+/*  1.000  2002/10/01                                                       */
+/*--------------------------------------------------------------------------*/
+
+
+/** ƒvƒƒgƒ^ƒCƒv **/
+long m4vae_putbits(long code,long length);
+int  m4vae_putstuffbitsmpeg4(long h264);
+int  m4vae_flushbits(long h264);
+
+// == end bitstream.h
     
