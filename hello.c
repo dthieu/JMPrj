@@ -5714,4 +5714,1029 @@ int  m4vae_putstuffbitsmpeg4(long h264);
 int  m4vae_flushbits(long h264);
 
 // == end bitstream.h
+/*--------------------------------------------------------------------------*/
+/* SH73xx MPEG-4 Encoder Module Ver.1.0                                     */
+/*	Copyright (C) Renesas Technology Corp., 2003. All rights reserved.	*/
+/*--------------------------------------------------------------------------*/
+/*	m4vae_vol_encode.c :				                					*/
+/*--------------------------------------------------------------------------*/
+/*  1.000  2002/10/01  start codes                                          */
+/*  1.000  2002/10/01                                                       */
+/*--------------------------------------------------------------------------*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "mpeg4venc.h"
+#include "m4vae.h"
+#include "m4vac_scan.h"
+#include "m4vae_bitstream.h"
+#include "m4iph_vpu4_global.h"
+
+/* this module is performed by CPU */
+
+//miche
+#include "m4vac_common.h"
+
+#ifdef iVCP1E_HM_SPEC
+extern char g_sei_message_text0[256];
+extern char g_sei_message_text1[256];
+extern long hd_ems_ins_flag;
+#endif
+
+//extern int use_multi_ref;
+
+/******************************************************************************
+*
+* Function Name	: m4vae_put_ue
+*
+*****************************************************************************/
+
+int m4vae_put_ue(
+    int codenum)
+{
+    int tmp, length;
+    long base, code;
+
+    tmp = user_log2(codenum + 1);
+    base = 1 << tmp;
+    length = tmp * 2 + 1;
+    code = base | (codenum + 1 - base);
+
+    return m4vae_putbits(code, length);
+}
+
+/******************************************************************************
+*
+* Function Name	: m4vae_put_se
+*
+*****************************************************************************/
+
+int m4vae_put_se(
+    int codenum)
+{
+    return m4vae_put_ue((abs(codenum) << 1) - pos(codenum));
+}
+
+/******************************************************************************
+*
+* Function Name	: m4vae_aud_encode
+*
+*****************************************************************************/
+
+#ifdef iVCP1_VLC_HM
+long m4vae_aud_encode(m4vae_vol_info* vol_info, m4vae_vop_info* vop_info) {
+    long nbits = 0;
+
+    printf("==== Access unit delimiter ====\n");
+
+    if(vol_info->stc_enc_enable)
+        nbits += m4vae_putbits(0x00000001, 32);	//start_code
+    nbits += m4vae_putbits(0x09, 8);        //nal_ref_idc:0, nal_unit_type:9(Access unit delimiter)
+    nbits += m4vae_putbits(vop_info->vop_coding_type & 0x3, 3);         //primary_pic_type
+    //nbits += m4vae_putbits(0x1, 1);         //rbsp_trailing_bits
+
+    return nbits;
+}
+#endif
+/******************************************************************************
+*
+* Function Name	: m4vae_seq_param_encode
+*
+*****************************************************************************/
+
+long m4vae_seq_param_encode(m4vae_vol_info* vol_info)
+{
+    long nbits = 0;
+#ifndef iVCP1_VLC_HM
+    long level_idc=0;
+#endif
+    long is_intra_profile = 0;
+
+    printf("==== Sequence parameter set ====\n");
+
+#ifndef iVCP1_VLC_HM
+    //MZ121019
+    // Profile
+    if ((vol_info->bit_depth_y == 8) && (vol_info->bit_depth_c == 8)){
+        printf("Baseline ");
+    }
+    else{
+        // considering 10bit Intra only
+        printf("High 10 Intra ");
+    }
+
+    //<IM050310>
+    // Level from Image size
+    if(vol_info->mb_width*vol_info->mb_height <= 792){
+        level_idc = 21;
+        //printf("Baseline 2.1\n");
+    }
+    else if(vol_info->mb_width*vol_info->mb_height <= 1620){
+        level_idc = 22;
+        //printf("Baseline 2.2\n");
+    }
+    else if(vol_info->mb_width*vol_info->mb_height <= 3600){
+        level_idc = 31;
+        //printf("Baseline 3.1\n");
+    }
+    else if(vol_info->mb_width*vol_info->mb_height <= 5120){
+        level_idc = 32;
+        //printf("Baseline 3.2\n");
+    }
+    //MZ121019
+    else if(vol_info->mb_width*vol_info->mb_height <= 8192){
+        level_idc = 40;
+    }
+    else {
+        printf("Sequence parameter set ERROR!!\n");
+        return -1;
+    }
+    //printf("Baseline 2.1\n");
+
+    //MZ121019
+    // Level from Bitrate
+    if ((vol_info->bit_depth_y == 8) && (vol_info->bit_depth_c == 8)){
+        if (vol_info->bitrate <= 4000000){
+            level_idc = (level_idc < 21) ? 21 : level_idc;
+        }
+        else if (vol_info->bitrate <= 10000000){
+            level_idc = (level_idc < 30) ? 30 : level_idc;
+        }
+        else if (vol_info->bitrate <= 14000000){
+            level_idc = (level_idc < 31) ? 31 : level_idc;
+        }
+        else if (vol_info->bitrate <= 20000000){
+            level_idc = (level_idc < 32) ? 32 : level_idc;
+        }
+        else if (vol_info->bitrate <= 50000000){
+            level_idc = (level_idc < 41) ? 41 : level_idc;
+        }
+        else{
+            printf("Sequence parameter set ERROR!!\n");
+            return -1;
+        }
+    }
+    else{
+        // considering 10bit only
+        // High 10 Intra -> x3
+        if (vol_info->bitrate <= 12000000){
+            level_idc = (level_idc < 21) ? 21 : level_idc;
+        }
+        else if (vol_info->bitrate <= 30000000){
+            level_idc = (level_idc < 30) ? 30 : level_idc;
+        }
+        else if (vol_info->bitrate <= 42000000){
+            level_idc = (level_idc < 31) ? 31 : level_idc;
+        }
+        else if (vol_info->bitrate <= 60000000){
+            level_idc = (level_idc < 32) ? 32 : level_idc;
+        }
+        else if (vol_info->bitrate <= 150000000){
+            level_idc = (level_idc < 41) ? 41 : level_idc;
+        }
+        else{
+            printf("Sequence parameter set ERROR!!\n");
+            return -1;
+        }
+    }
+    if (level_idc % 10 == 0){
+        printf("%d\n", level_idc/10);
+    }
+    else{
+        printf("%1.1f\n", (float)level_idc/10);
+    }
+
+    printf("image size : %dx%d\n", vol_info->mb_width*16, vol_info->mb_height*16);
+#endif
+
+#ifdef iVCP1_VLC_HM
+    if(vol_info->stc_enc_enable)
+#endif
+        nbits += m4vae_putbits(0x00000001, 32);	//start_code
+
+    nbits += m4vae_putbits(0x67, 8);			//nal_ref_idc:3, nal_unit_type:7(Sequence_parameter_set)
+#ifndef iVCP1_VLC_HM
+    //MZ121019
+    if ((vol_info->bit_depth_y == 8) && (vol_info->bit_depth_c == 8)){
+        nbits += m4vae_putbits(0x42, 8);			//profile_idc:66(Baseline)
+        //	    nbits += m4vae_putbits(0xe0, 8);			//constraint_setX_flag:7(Baseline&Main&Extended)
+        nbits += m4vae_putbits(0x0, 8);			//constraint_setX_flag:7(Baseline&Main&Extended)
+    }
+    else{
+        // considering 10bit Intra only
+        nbits += m4vae_putbits(0x6e, 8);			//profile_idc:110(High 10 Intra)
+        nbits += m4vae_putbits(0xf0, 8);			//constraint_setX_flag:15(Baseline&Main&Extended&High)
+    }
+    //<IM050310>
+    //	nbits += m4vae_putbits(0x15, 8);			//level_idc:21(2.1)
+    nbits += m4vae_putbits(level_idc, 8);			//level_idc:32(3.2)
+
+    nbits += m4vae_put_ue(0);				//seq_param_set_id:ue(0)
+    //MZ121019
+    if ((vol_info->bit_depth_y != 8) || (vol_info->bit_depth_c != 8)){
+        nbits += m4vae_put_ue(1);			//chroma_format_idc:ue(1)
+        nbits += m4vae_put_ue(vol_info->bit_depth_y - 8);	//bit_depth_luma_minus8:ue(0)
+        nbits += m4vae_put_ue(vol_info->bit_depth_c - 8);	//bit_depth_chroma_minus8:ue(0)
+        nbits += m4vae_putbits(0x0, 1);		//qpprime_y_zero_transform_bypass_flag:0
+        nbits += m4vae_putbits(0x0, 1);		//seq_scaling_matrix_present_flag:0
+    }
+#else
+    switch (vol_info->sps_profile_idc) {
+    case iVCP1_BASELINE:
+        printf("Baseline ");
+        nbits += m4vae_putbits( (66 << 8) | 0, 16 );
+        break;
+    case iVCP1_CONSTRAINED_BASELINE:
+        printf("Constrained Baseline ");
+        nbits += m4vae_putbits( (66 << 8) | (1 << 6), 16);
+        break;
+    case iVCP1_MAIN:
+        printf("Main ");
+        nbits += m4vae_putbits( (77 << 8) | 0, 16);
+        break;
+    case iVCP1_EXTENDED:
+        printf("Extended ");
+        nbits += m4vae_putbits( (88 << 8) | 0, 16);
+        break;
+    case iVCP1_HIGH:
+        printf("High ");
+        nbits += m4vae_putbits( (100 << 8) | 0, 16);
+        break;
+    case iVCP1_PROGRESSIVE_HIGH:
+        printf("Progressive High ");
+        nbits += m4vae_putbits( (100 << 8) | (1 << 3), 16);
+        break;
+    case iVCP1_HIGH10:
+        printf("High10 ");
+        nbits += m4vae_putbits( (110 << 8) | 0, 16);
+        break;
+    case iVCP1_HIGH10_INTRA:
+        printf("High10 Intra ");
+        nbits += m4vae_putbits( (110 << 8) | (1 << 4), 16);
+        is_intra_profile = 1;
+        break;
+    case iVCP1_Hi444PP: //for 12-bit
+        printf("High 4:4:4 Predictive Profile (Hi444PP) ");
+        nbits += m4vae_putbits( (244 << 8) | 0, 16);
+        break;
+    case iVCP1_Hi444_INTRA: //for 12-bit
+        printf("High 4:4:4 Intra Profile ");
+        nbits += m4vae_putbits( (244 << 8) | (1 << 4), 16);
+        is_intra_profile = 1;
+        break;
+    case iVCP1_CAVLC444_INTRA: //for 12-bit
+        printf("CAVLC 4:4:4 Intra Intra Profile ");
+        nbits += m4vae_putbits( (44 << 8) | (1 << 4), 16);
+        is_intra_profile = 1;
+        break;
+    case iVCP1_HIGH422:
+        printf("High 4:2:2 Profile ");
+        nbits += m4vae_putbits((122 << 8) | 0, 16);
+        break;
+    case iVCP1_HIGH422_INTRA:
+        printf("High 4:2:2 Intra Profile ");
+        nbits += m4vae_putbits((122 << 8) | (1 << 4), 16);
+        is_intra_profile = 1;
+        break;
+    default:
+        fprintf(stdout, "Sequence_parameter_set Error: invalid profile_idc\n");
+        exit(1);
+        break;
+    }
+    nbits += m4vae_putbits(vol_info->sps_level_idc, 8);			//level_idc
+
+    if (vol_info->sps_level_idc % 10 == 0){
+        printf("%ld\n", vol_info->sps_level_idc/10);
+    }
+    else{
+        printf("%1.1f\n", (float)vol_info->sps_level_idc/10);
+    }
+
+    printf("image size : %ldx%ld\n", vol_info->mb_width*16, vol_info->mb_height*16);
+    nbits += m4vae_put_ue(0);				//seq_param_set_id:ue(0)
+    //MZ121019
+    if (vol_info->sps_profile_idc > iVCP1_EXTENDED){
+        nbits += m4vae_put_ue(vol_info->chroma_format_idc & 0x3);   //chroma_format_idc:ue(v)
+        nbits += m4vae_put_ue(vol_info->bit_depth_y - 8);	    //bit_depth_luma_minus8:ue(0)
+        if(vol_info->chroma_format_idc != 0) {
+            nbits += m4vae_put_ue(vol_info->bit_depth_c - 8);	//bit_depth_chroma_minus8:ue(0)
+        }else{
+            nbits += m4vae_put_ue(0);	                        //bit_depth_chroma_minus8:ue(0) (monochrome)
+        }
+        nbits += m4vae_putbits(0x0, 1);		//qpprime_y_zero_transform_bypass_flag:0
+        nbits += m4vae_putbits(vol_info->sps_seq_scaling_matrix_present_flag, 1);		//seq_scaling_matrix_present_flag:0
+        if(vol_info->sps_seq_scaling_matrix_present_flag) {
+            nbits += m4vae_putbits(0x0, 8);		//seq_scaling_list_present_flag[0->7]
+        }
+    }
+#endif
+    nbits += m4vae_put_ue(0);				//log2_max_frame_num_minus4:ue(4)
+    //	nbits += m4vae_put_ue(2);				//pic_order_cnt_type:ue(2)
+    nbits += m4vae_put_ue(0);				//pic_order_cnt_type:ue(0)
+    nbits += m4vae_put_ue(0);				//log2_max_pic_order_cnt_lsb_minus4:ue(0)
+#ifdef iVCP1E_HM_SPEC
+    if ( is_intra_profile ) { // Intra Profile
+        nbits += m4vae_put_ue(0);			//num_ref_frames:ue(0)
+    } else {
+        nbits += m4vae_put_ue(1);			//num_ref_frames:ue(1)
+    }
+#else
+    nbits += m4vae_put_ue(0);				//num_ref_frames:ue(1)
+#endif
+    nbits += m4vae_putbits(0x0, 1);			//gaps_in_frame_num_value_allowed_flag:0
+    nbits += m4vae_put_ue(vol_info->mb_width - 1);	//pic_width_in_mbs_minus1:ue(10)
+    nbits += m4vae_put_ue(vol_info->mb_height - 1);	//pic_height_in_map_units_minus1:ue(8)
+#ifdef iVCP1E_HM_SPEC
+    if(vol_info->interlaced) {
+        nbits += m4vae_putbits(0x0, 1);			//frame_mbs_only_flag:0
+        nbits += m4vae_putbits(0x0, 1);			//mb_adaptive_frame_field_flag:0
+    }else{
+        nbits += m4vae_putbits(0x1, 1);			//frame_mbs_only_flag:1
+    }
+#else
+    nbits += m4vae_putbits(0x1, 1);			//frame_mbs_only_flag:1
+#endif
+    nbits += m4vae_putbits(0x1, 1);			//direct_8x8_inference_flag:0
+
+    //<IM040624>
+    //	nbits += m4vae_putbits(0x0, 1);			//frame_cropping_flag:0
+    nbits += m4vae_putbits(vol_info->frame_cropping_flag, 1);			//frame_cropping_flag:0
+
+    if (vol_info->frame_cropping_flag){	//frame_cropping_flag
+        printf("Warning: frame_cropping_flag is set to 1.\n");
+        nbits += m4vae_put_ue(vol_info->frame_crop_left_offset);
+        nbits += m4vae_put_ue(vol_info->frame_crop_right_offset);
+        nbits += m4vae_put_ue(vol_info->frame_crop_top_offset);
+        nbits += m4vae_put_ue(vol_info->frame_crop_bottom_offset);
+        printf("left:%ld right:%ld top:%ld bottom:%ld\n",
+            vol_info->frame_crop_left_offset,
+            vol_info->frame_crop_right_offset,
+            vol_info->frame_crop_top_offset,
+            vol_info->frame_crop_bottom_offset	);
+    }
+
+    if(vol_info->vui_enc_enable) {
+        nbits += m4vae_putbits(0x1, 1);         //vui_parameters_present_flag:1
+        nbits += m4vae_putbits(0x0, 1);         //aspect_ratio_info_present_flag
+        nbits += m4vae_putbits(0x0, 1);         //overscan_info_present_flag
+        nbits += m4vae_putbits(0x0, 1);         //video_signal_type_present_flag
+        nbits += m4vae_putbits(0x0, 1);         //chroma_loc_info_present_flag
+        nbits += m4vae_putbits(0x0, 1);         //timing_info_present_flag
+        nbits += m4vae_putbits(0x0, 1);         //nal_hrd_parameters_present_flag
+        nbits += m4vae_putbits(0x0, 1);         //vcl_hrd_parameters_present_flag
+        nbits += m4vae_putbits(0x0, 1);         //pic_struct_present_flag
+        nbits += m4vae_putbits(0x1, 1);         //bitstream_restriction_flag
+        nbits += m4vae_putbits(0x1, 1);         //motion_vectors_over_pic_boundaries_flag
+        nbits += m4vae_put_ue(0x2);             //max_bytes_per_pic_denom
+        nbits += m4vae_put_ue(0x1);             //max_bits_per_mb_denom
+        nbits += m4vae_put_ue(0x10);            //log2_max_mv_length_horizontal
+        nbits += m4vae_put_ue(0x10);            //log2_max_mv_length_vertical
+        nbits += m4vae_put_ue(0x0);             //max_num_reorder_frames
+        if( is_intra_profile ) {
+            nbits += m4vae_put_ue(0x0);         //max_dec_frame_buffering
+        }else {
+            nbits += m4vae_put_ue(0x1);         //max_dec_frame_buffering
+        }
+    }else {
+        nbits += m4vae_putbits(0x0, 1);			//vui_parameters_present_flag:0
+    }
+    //nbits += m4vae_putbits(0x1, 1);			//rbsp_trailing_bits()
+
+    return nbits;
+}
+
+/******************************************************************************
+*
+* Function Name	: m4vae_pic_param_encode
+*
+*****************************************************************************/
+
+long m4vae_pic_param_encode(m4vae_vol_info* vol_info)
+{
+    long nbits = 0;
+
+    printf("==== Picture parameter set ====\n");
+    //<IM040122>
+    //	printf("picture init_qp : %d\n", 26);
+
+#ifdef iVCP1_VLC_HM
+    if(vol_info->stc_enc_enable)
+#endif
+        nbits += m4vae_putbits(0x00000001, 32);	//start_code
+
+    nbits += m4vae_putbits(0x68, 8);			//nal_ref_idc:3, nal_unit_type:8(Picture_parameter_set)
+    nbits += m4vae_put_ue(0);				//pic_param_set_id:ue(0)
+    nbits += m4vae_put_ue(0);				//seq_param_set_id:ue(0)
+    nbits += m4vae_putbits(0x0, 1);			//entropy_coding_mode_flag:0
+    nbits += m4vae_putbits(0x0, 1);			//pic_order_present_flag:0
+    nbits += m4vae_put_ue(0);				//num_slice_groups_minus1:ue(0)
+    nbits += m4vae_put_ue(0);				//num_ref_idx_l0_active_minus1:ue(0)
+    //	nbits += m4vae_put_ue(use_multi_ref);	//num_ref_idx_l0_active_minus1:ue(0)
+    //<IM040220> ‚±‚±‚Å‚Í0‚Æ‚µAslice_header ‚Åã‘‚«‚·‚é
+    nbits += m4vae_put_ue(0);				//num_ref_idx_l1_active_minus1:ue(0)
+    nbits += m4vae_putbits(0x0, 1);			//weighted_pred_flag:0
+    nbits += m4vae_putbits(0x0, 2);			//weighted_bipred_idc:0
+    //<MZ041227>
+#ifndef iVCP1_VLC_HM
+#ifdef SLICE_QP_MIDDLE
+    nbits += m4vae_put_se(vol_info->quant_init_i-26);				//pic_init_qp_minus26:se(0)
+    nbits += m4vae_put_se(vol_info->quant_init_i-26);				//pic_init_qs_minus26:se(0)
+#else
+    nbits += m4vae_put_se(0);				//pic_init_qp_minus26:se(0)
+    nbits += m4vae_put_se(0);				//pic_init_qs_minus26:se(0)
+#endif
+#else
+    nbits += m4vae_put_se(vol_info->quant_init_i-26 -(vol_info->bit_depth_y-8)*6);    //pic_init_qp_minus26:se(0)
+    nbits += m4vae_put_se(0);				                    //pic_init_qs_minus26:se(0)
+#endif
+    //<IM040210>
+#ifdef iVCP1_VLC_HM
+    nbits += m4vae_put_se(vol_info->pps_chroma_qp_index_offset);			            // chroma_qp_index_offset
+    nbits += m4vae_putbits(vol_info->pps_deblocking_filter_control_present_flag, 1);    //deblocking_filter_control_present_flag:0
+#else
+    nbits += m4vae_put_se(vol_info->qp_c_offset);	//chroma_qp_index_offset
+    nbits += m4vae_putbits(0x0, 1);			//deblocking_filter_variables_present_flag:0
+#endif
+    //<IM040210>
+    //	m4vae_putbits(0x0, 1);			//constrained_intra_pred_flag:0
+    nbits += m4vae_putbits(vol_info->constrained_intra_pred, 1);			//constrained_intra_pred_flag:0
+    //	nbits += m4vae_putbits(0x0, 1);			//redundant_pic_cnt_present_flag:0
+    nbits += m4vae_putbits(0x0, 1);			//redundant_pic_cnt_present_flag:0
+#ifdef iVCP1_VLC_HM
+    if(vol_info->sps_profile_idc > iVCP1_EXTENDED ) {
+        nbits += m4vae_putbits(vol_info->transform8x8_en, 1);			     //transform_8x8_mode_flag
+        nbits += m4vae_putbits(0x0, 1);			                            //pic_scaling_matrix_present_flag
+        nbits += m4vae_put_se(vol_info->pps_second_chroma_qp_index_offset); // second_chroma_qp_index_offset
+        //m4vae_putbits(0x1, 1);			//rbsp_trailing_bits()
+    }
+#endif
+    //	m4vae_putbits(0x80, 8);			//rbsp_trailing_bits()
+    //	m4vae_putbits(0x0, 1);			//rbsp_trailing_bits()
+
+    return nbits;
+}
+
+long m4vae_sei_encode(m4vae_vol_info* vol_info) {
+    int nbits = 0;
+    int i = 0, j = 0;
+    int message_size0 = 0;
+    int message_size1 = 0;
     
+    printf("==== Supplemental enhancement information ====\n");
+
+    if ( vol_info->sei_mode < 2 ) {
+        message_size0 = vol_info->sei_length0;
+        message_size1 = vol_info->sei_length1;
+
+        if( message_size0 > 32) {
+            printf("Warning: SEI message0 has length %d > 32 byte \n", message_size0);
+        }
+        if( message_size1 > 32) {
+            printf("Warning: SEI message1 has length %d > 32 byte\n", message_size1);
+        }
+
+        // set initial data (incremental)
+        //for ( i=0; i<32; i++ ) {
+        //    g_sei_message_text0[i] = i+1;
+        //    g_sei_message_text1[i] = i+1;
+        //}
+
+
+    }else{
+        if( vol_info->sei_enc_enable & 0x1) {
+            message_size0 = strlen(g_sei_message_text0);
+            vol_info->sei_length0 = strlen(g_sei_message_text0);
+        }
+        if( vol_info->sei_enc_enable & 0x2) {
+            message_size1 = strlen(g_sei_message_text1);
+            vol_info->sei_length1 = strlen(g_sei_message_text0);
+        }
+        if( message_size0 > 32) {
+            printf("Warning: SEI message0 has length %d > 32 byte \n", message_size0);
+        }
+        if( message_size1 > 32) {
+            printf("Warning: SEI message1 has length %d > 32 byte\n", message_size1);
+        }
+    }
+    message_size0 += 16; //for UUID
+    message_size1 += 16; //for UUID
+
+#ifdef iVCP1_VLC_HM
+    if(vol_info->stc_enc_enable)
+#endif
+        nbits += m4vae_putbits(0x00000001, 32);		//nal_unit_start_code
+    nbits += m4vae_putbits(0x06, 8);			    //nal_ref_idc:0, nal_unit_type:6(SEI)
+    
+    if(vol_info->sei_enc_enable & 0x1) {  //SEI0
+        nbits += m4vae_putbits(0x05, 8);        //last_payload_type_byte: 5 (unregistered SEI message)
+        while (message_size0 > 254) {
+            nbits += m4vae_putbits(0xff, 8);
+            message_size0 -= 255;
+        }
+        nbits += m4vae_putbits(message_size0 & 0xff, 8); //last_payload_size_byte
+        nbits += m4vae_putbits(0x96733217, 32); //UUID0
+        nbits += m4vae_putbits(0xd23b4d6d, 32); //UUID0
+        nbits += m4vae_putbits(0xa762c2a1, 32); //UUID0
+        nbits += m4vae_putbits(0x5becc767, 32); //UUID0
+        hd_ems_ins_flag = 1; //enable Emulation prevention byte instertion
+        if (vol_info->sei_mode == 1) {
+            j = 0;
+            for (i = 0; i < vol_info->sei_length0; i++) {
+                nbits += m4vae_putbits((vol_info->sei_payload[(vol_info->sei_index0 + j)&0x7] >> (24 - (i&3)*8)) & 0xff, 8);
+                if ((i & 3) == 3) {
+                    j++;
+                }
+            }
+        }
+        else {
+            for (i = 0; i < vol_info->sei_length0; i++) {
+                nbits += m4vae_putbits(g_sei_message_text0[i + vol_info->sei_index0 * 4] & 0xff, 8);
+            }
+        }
+        hd_ems_ins_flag = 0; //disable Emulation prevention byte instertion
+    }
+    if(vol_info->sei_enc_enable & 0x2) {  //SEI1
+        nbits += m4vae_putbits(0x05, 8);        //last_payload_type_byte: 5 (unregistered SEI message)
+        while (message_size1 > 254) {
+            nbits += m4vae_putbits(0xff, 8);
+            message_size1 -= 255;
+        }
+        nbits += m4vae_putbits(message_size1 & 0xff, 8); //last_payload_size_byte
+        nbits += m4vae_putbits(0x6763710c, 32); //UUID1
+        nbits += m4vae_putbits(0xa61748ac, 32); //UUID1
+        nbits += m4vae_putbits(0x8f86b402, 32); //UUID1
+        nbits += m4vae_putbits(0xd832ccc3, 32); //UUID1
+        hd_ems_ins_flag = 1; //enable Emulation prevention byte instertion
+        if (vol_info->sei_mode == 1) {
+            j = 0;
+            for (i = 0; i < vol_info->sei_length1; i++) {
+                nbits += m4vae_putbits((vol_info->sei_payload[(vol_info->sei_index1 + j) & 0x7] >> (24 - (i & 3) * 8)) & 0xff, 8);
+                if ((i & 3) == 3) {
+                    j++;
+                }
+            }
+        }
+        else {
+            for (i = 0; i < vol_info->sei_length1; i++) {
+                nbits += m4vae_putbits(g_sei_message_text1[i + vol_info->sei_index1 * 4] & 0xff, 8);
+            }
+        }
+        hd_ems_ins_flag = 0; //disable Emulation prevention byte instertion
+    }
+    //nbits += m4vae_putbits(0x80, 8);            //rbsp_stop_one_bit
+    return nbits;
+}
+/*--------------------------------------------------------------------------*/
+/*                                                                          */
+/* m4vae_vos_encode                                                         */
+/* function: encode VOS bitstream                                           */
+/*                                                                          */
+/*--------------------------------------------------------------------------*/
+long m4vae_vos_encode(m4vae_vol_info* vol_info,unsigned char*m4vae_user_data_area_vos, long m4vae_n_user_data_vos)
+{
+
+    long i;
+
+    if ( vol_info == 0 ) 
+        return M4VAE_PAR;
+
+    //	m4vae_putbits(VISUAL_OBJECT_SEQ_START_CODE, 32);
+    m4vae_putbits(1, 24);
+    m4vae_putbits(0xB0,8);
+    // profile and level indication
+    m4vae_putbits(vol_info->profile_and_level_indication, 8);
+
+    if (m4vae_n_user_data_vos > 0) {  /* output only if user data has been set */
+        //		m4vae_putbits(USER_DATA_START_CODE, 32);
+        m4vae_putbits(1, 24);
+        m4vae_putbits(0xB2,8);
+        for (i = 0; i < m4vae_n_user_data_vos; i++) {
+            m4vae_putbits(m4vae_user_data_area_vos[i], 8);
+        }
+        m4vae_n_user_data_vos = 0;
+    }
+
+    //	m4vae_putbits(VISUAL_OBJECT_START_CODE, 32);
+    m4vae_putbits(1, 24);
+    m4vae_putbits(0xB5,8);
+
+    return M4VAE_OK;
+}
+
+/*--------------------------------------------------------------------------*/
+/*                                                                          */
+/* m4vae_vo_encode                                                         */
+/* function: encode VO bitstream                                           */
+/*                                                                          */
+/*--------------------------------------------------------------------------*/	
+long m4vae_vo_encode(m4vae_vol_info* vol_info,unsigned char*m4vae_user_data_area_vo,long m4vae_n_user_data_vo)
+{
+    long i;
+
+    if ( vol_info == 0 ) 
+        return M4VAE_PAR;
+
+    /*is_visual_object_identifier 0*/
+    /*visual_object_type 0001*/
+    /*video_signal_type 0*/
+    /*stuffing 11->01 */
+    m4vae_putbits(0x09, 8);
+
+    if (m4vae_n_user_data_vo > 0) {  /* output only if user data has been  set */
+        //		m4vae_putbits(USER_DATA_START_CODE, 32);
+        m4vae_putbits(1, 24);
+        m4vae_putbits(0xB2,8);
+        for(i = 0; i < m4vae_n_user_data_vo; i++) {
+            m4vae_putbits(m4vae_user_data_area_vo[i], 8);
+        }
+        m4vae_n_user_data_vo = 0;
+    }
+
+    return M4VAE_OK;
+}
+
+/*--------------------------------------------------------------------------*/
+/*                                                                          */
+/* m4vae_vo_encode                                                         */
+/* function: encode VO bitstream                                           */
+/*                                                                          */
+/*--------------------------------------------------------------------------*/	
+long m4vae_vo_id_encode(m4vae_vol_info* vol_info)
+{
+
+    //	m4vae_putbits(vol_info->video_object_id, 32);
+    m4vae_putbits(1, 24);
+    m4vae_putbits(vol_info->video_object_id,8);
+
+    return M4VAE_OK;
+
+}
+/*--------------------------------------------------------------------------*/
+/*                                                                          */
+/* m4vae_vol_encode                                                         */
+/* function: encode VOL bitstream                                           */
+/*                                                                          */
+/*--------------------------------------------------------------------------*/
+long m4vae_vol_encode(m4vae_vol_info* vol_info,unsigned char*m4vae_user_data_area_vol,long m4vae_n_user_data_vol)
+{
+    long tmp_mat[32];     
+    long *temp;
+    long start_code;
+    long i;
+
+    if ( vol_info == 0 ) 
+        return M4VAE_PAR;
+
+
+    if ( vol_info->short_video_header ) {
+        // H.263 baseline
+
+
+    }
+    else {
+        start_code = 0x00000120 | vol_info->video_object_layer_id;
+        //m4vae_putbits(start_code, 32);
+        m4vae_putbits(1, 24);
+        m4vae_putbits(vol_info->video_object_layer_id,8);
+
+        m4vae_putbits(0, 1);	// randomAccess = 0
+        m4vae_putbits(vol_info->video_object_type_indication,8);
+        m4vae_putbits(0, 1);	// is_object_id = 0
+        /* C³—vI */
+        m4vae_putbits(vol_info->aspect_ratio_info,4);
+        //		if(m4vse_penc_option->m4vse_aspect_ratio_info_type == M4VSE_AUTO) m4vae_putbits(m4vse_video_format, 4); // aspectRatioInfo = PAL(0010)/NTSC(0011)
+        //		else m4vae_putbits((m4vse_penc_option->m4vse_aspect_ratio_info_value), 4); // aspectRatioInfo = 0000-1111
+
+        m4vae_putbits(0, 1);	// vol_control_parameter = 0
+
+        //m4vae_putbits(0, 2);			// shape = 0
+        //m4vae_putbits(1, 1);			// Marker bit
+        m4vae_putbits(1, 3);			
+        m4vae_putbits(vol_info->vop_time_increment_resolution, 16);
+        //m4vae_putbits(1, 1);			// Marker bit
+        //m4vae_putbits(0, 1);			// fixedVopRate = 0
+        //m4vae_putbits(1, 1);			// Marker bit
+        m4vae_putbits(5, 3);			
+        m4vae_putbits(vol_info->video_object_layer_width, 13);
+        m4vae_putbits(1, 1);			// Marker bit
+        m4vae_putbits(vol_info->video_object_layer_height,13);
+        m4vae_putbits(1, 1);			// Marker bit
+        m4vae_putbits(vol_info->interlaced, 1);			// interlaced
+        //m4vae_putbits(1, 1);			// obmcDisable = 1
+        //m4vae_putbits(0, 1);			// spriteEnable = 0
+        //m4vae_putbits(0, 1);			// not8Bit = 0
+        m4vae_putbits(0x4, 3);
+        m4vae_putbits(vol_info->quant_type, 1);
+
+        if (vol_info->quant_type == 1 || vol_info->jpeg_mode) {
+            temp = (long *)VP4_MAT_RAM;
+            for (i=0;i<32;i++) {
+                tmp_mat[i] = *(temp++);
+            }
+            load_quant_matrix((unsigned char *)tmp_mat);
+            //			load_quant_matrix((unsigned char *)VP4_MAT_RAM);
+        }
+
+        //  gray scale shape is not supported at core profile
+
+        m4vae_putbits(1, 1);			// compEstDisable = 1
+        m4vae_putbits(vol_info->resync_marker_disable, 1);		
+        m4vae_putbits(vol_info->data_partitioned, 1);
+        if(vol_info->data_partitioned) {
+            m4vae_putbits (vol_info->rvlc_enable, 1);
+        }
+
+        //<AK040608>
+        if (vol_info->rsc_enc_mode){
+            m4vae_putbits(1, 1);		// scalability = 1, but don't encode if (scalability){...
+
+        }else{
+            m4vae_putbits(0, 1);		// scalability = 0
+        }
+
+        //		m4vae_putstuffbitsmpeg4();
+
+        if(m4vae_n_user_data_vol > 0) {  /* output only if user data has been  set */
+            m4vae_putbits(USER_DATA_START_CODE, 32);
+            for (i = 0; i < m4vae_n_user_data_vol; i++) {
+                m4vae_putbits(m4vae_user_data_area_vol[i], 8);
+            }
+            m4vae_n_user_data_vol = 0;
+        }
+
+    }
+
+    m4vae_flushbits(vol_info->h264);
+
+    return M4VAE_OK;
+
+}
+
+#if 1
+/*--------------------------------------------------------------------------*/
+/*                                                                          */
+/* m4vae_gvop_encode                                                         */
+/* function: encode GVOP bitstream                                           */
+/*                                                                          */
+/*--------------------------------------------------------------------------*/
+long m4vae_gvop_encode(m4vae_vol_info* vol_info,m4vae_vop_info* vop_info,unsigned char*m4vae_user_data_area_gvop,long m4vae_n_user_data_gvop) 
+{
+
+    long m4vae_tinc;
+
+    //Put the Group of video object plane start code.
+    m4vae_putbits(GROUP_OF_VOP_START_CODE, 32);
+
+    m4vae_tinc = ( vol_info->frm - vol_info->last_frm ) & 65536;
+    //	m4vse_last_frame = m4vse_current_frame;
+#if 0 // under construction
+    if(m4vae_gvop_set_flg==0) {
+        m4vae_vop_time_inc += m4vae_tinc;
+        while (m4vae_vop_time_inc>= m4vae_vop_time_inc_res){
+            m4vae_vop_time_inc -= (m4vae_vop_time_inc_res);
+            //m4vae_mp4_modulo_time_base ++; ->>> GetTime()‚ÅŽæ“¾‚µ‚½’l‚ÅƒCƒ“ƒNƒŠƒƒ“ƒgB
+            if(++m4vae_gvop_S >= 60){
+                m4vae_gvop_S = 0;
+                if (++m4vae_gvop_M >= 60){
+                    m4vae_gvop_M = 0;
+                    if (++m4vae_gvop_H >= 24){
+                        m4vae_gvop_H = 0;
+                    }
+                }
+            }
+        }
+    }else{
+        m4vae_gvop_set_flg=0;
+    }
+#endif
+
+    //fprintf(log_fp, "Gvop( H:%d , M:%d , S:%d )\n",m4vae_gvop_H,m4vae_gvop_M,m4vae_gvop_S); 
+
+    m4vae_putbits(vop_info->time_code_hours,5);			// Put the number of hours using 5 bits.
+    m4vae_putbits(vop_info->time_code_minites,6);		// Put the number of minutes using 6 bits.
+    m4vae_putbits(1,1); 			// Put the Marker Bit.
+    m4vae_putbits(vop_info->time_code_seconds,6);		// Put the number of seconds using 6 bits.
+    m4vae_putbits(vop_info->closed_gov,1);	// Put the closedGov flag.
+    //	m4vae_putbits(1,1);	// Put the closedGov flag.
+    m4vae_putbits(vop_info->broken_link,1);	// Put the brokenLink flag.
+
+    m4vae_putstuffbitsmpeg4(vol_info->h264);
+
+    {
+        long  i;
+        if(m4vae_n_user_data_gvop>0){  /* output only if user data has been  set */
+            m4vae_putbits(USER_DATA_START_CODE, 32);
+            for(i=0; i<m4vae_n_user_data_gvop;i++){
+                m4vae_putbits(m4vae_user_data_area_gvop[i], 8);
+            }
+            m4vae_n_user_data_gvop = 0;
+        }
+    }
+
+    m4vae_flushbits(vol_info->h264);
+
+    return 0;
+}
+#endif
+
+
+#if 0
+/*--------------------------------------------------------------------------*/
+/*                                                                          */
+/* m4vae_vop_header_encode                                                  */
+/* function: encode VOP header bitstream                                    */
+/*                                                                          */
+/*--------------------------------------------------------------------------*/
+long m4vae_vop_header_encode(m4vae_vol_info* vol_info,m4vae_vop_info* vop_info) 
+{
+
+    //	m4vae_putbits(VIDEO_OBJECT_PLANE_START_CODE, 32);
+    m4vae_putbits(1, 24);
+    m4vae_putbits(0xB6,8);
+
+    m4vae_putbits(vop_info->vop_coding_type,2);
+
+    //	m4vae_encode_modulotimebase(m4vae_vol_info* vol_info,m4vae_vop_info* vop_info);
+
+    m4vae_putbits(0,1);	// modulo time_base end
+    m4vae_putbits(1,1);	// marker
+    //	m4vae_putbits(vol_info->frm,vol_info->vop_time_increment_resolution);
+    m4vae_putbits(vol_info->frm,5);
+    m4vae_putbits(1,1);
+
+    m4vae_putbits(vop_info->vop_coded,1);
+
+    if( vop_info->vop_coded == 0 )
+    {
+        m4vae_putstuffbitsmpeg4(vol_info->h264);
+        return 0;
+    }
+
+    if( vop_info->vop_coding_type == P_VOP)
+    {
+        m4vae_putbits(vop_info->vop_rounding_type,1);
+    }
+
+    m4vae_putbits(vop_info->intra_dc_vlc_thr,3);	// intra_dc_vlc_thr is 0 
+
+    if ( vol_info->interlaced == 1) {
+        m4vae_putbits(vop_info->top_field_first,1);
+        m4vae_putbits(vop_info->altenate_vertical_scan_flag,1);
+    }
+
+    m4vae_putbits(vop_info->vop_quant, 5);	// quant precision is 5
+
+    if( vop_info->vop_coding_type == P_VOP)
+    {
+        m4vae_putbits(vop_info->vop_fcode_forward,3);
+    }
+    else if( vop_info->vop_coding_type == B_VOP)
+    {
+        //<IM041029> B-VOPŽž‚Í’Tõ”ÍˆÍ16‚Ì‚Ý
+        //		m4vae_putbits(vop_info->vop_fcode_forward,3);
+        //		m4vae_putbits(vop_info->vop_fcode_backward,3);
+        m4vae_putbits(1,3);	
+        m4vae_putbits(1,3);
+    }
+
+
+    return 0;
+}
+#endif
+
+#if 0
+/*--------------------------------------------------------------------------*/
+/*                                                                          */
+/* m4vae_encode_modulotimebase                                              */
+/* function: encode modulotimebase                                          */
+/*                                                                          */
+/*--------------------------------------------------------------------------*/
+long m4vae_encode_modulotimebase(m4vae_vol_info* vol_info,m4vae_vop_info* vop_info) 
+{
+
+    vop_info->vop_time_increment
+        mp4_inc_vop_time(int frmn_16bit,int seq_16bit,int ptype)
+    {
+#ifndef BVOP_PROC
+        tinc = (frmn_16bit- last_frmn_16bit) & 65535 ;
+        last_frmn_16bit = frmn_16bit;
+#else
+        if(ptype == PIC_BVOP) {
+            mp4_modulo_time_base_bvop = 0;
+            if(seq_16bit > anch_frmn0) {
+                tinc = seq_16bit - anch_frmn0 ;
+            } else {
+                fprintf(stderr, "Warning !! Frame counter ? \n");
+                tinc = 1;
+            }
+            mp4_vop_time_inc_bvop = anch0_vop_time_inc + tinc;
+            while (mp4_vop_time_inc_bvop >= mp4_vop_time_inc_resolution) {
+                mp4_vop_time_inc_bvop -= (mp4_vop_time_inc_resolution) ;
+                mp4_modulo_time_base_bvop ++ ;
+            }
+#if 0
+            printf("\t\t\t\t\t\tB-VOP TS: Modulo %d, inc %d (%d) ---\n",mp4_modulo_time_base_bvop,mp4_vop_time_inc_bvop,tinc);
+#endif
+        } else {
+            anch_frmn0 = anch_frmn1;
+            anch_frmn1 = seq_16bit;
+            tinc = (seq_16bit- last_frmn_16bit) & 65535 ;
+            last_frmn_16bit = seq_16bit;
+#endif
+            mp4_vop_time_inc += tinc ;
+            while (mp4_vop_time_inc>= mp4_vop_time_inc_resolution) {
+                mp4_vop_time_inc -= (mp4_vop_time_inc_resolution) ;
+                mp4_modulo_time_base ++ ;
+                if (++mp4_time_codeS >= 60){	/* add @010115 */
+                    mp4_time_codeS = 0 ;
+                    if (++mp4_time_codeM >= 60){
+                        mp4_time_codeM = 0 ;
+                        if (++mp4_time_codeH >= 24){
+                            mp4_time_codeH = 0 ;
+                        }
+                    }
+                }
+            }
+#if 0
+            printf("\t\t\t\t\t\tTimeStamp: %2d:%2d:%2d.%2d ----\n",mp4_time_codeH,mp4_time_codeM,mp4_time_codeS,mp4_vop_time_inc);
+            printf("\t\t\t\t\t\tTimeStamp: Modulo %d, inc %d ----\n",mp4_modulo_time_base, mp4_vop_time_inc);
+#endif
+#ifdef BVOP_PROC
+            anch0_vop_time_inc = anch1_vop_time_inc;
+            anch1_vop_time_inc = mp4_vop_time_inc;
+        }
+#endif
+
+
+        USInt ltimeIncrRes	= ptrVol->vopTimeIncrRes;
+        Float lroundingCtrl = (Float)( 0.5 / ltimeIncrRes );
+
+        // IT-01/CMF# 05-1 : enhancement layer vop should take timestamp of
+        // previous vop in display order from same layer,
+        // not of reference vop(which can be from base layer)
+        Float prevVopTimeStamp;
+        prevVopTimeStamp = ptrVol->prevVop->timeStamp;
+
+        // IT-01/CMF# 24-13: 
+        // If CVideoObjectPlane is notcoded then aux CVideoObjectPlane is used for
+        // taking time backup of it.
+        Float auxVopTime = 0;
+
+        // subtract reference time from absolute time
+        Float lrefTime = MAX(  MAX(  ((M4VSE_EVideoObjectLayer*)ptrVol)->ptrGvop->GetTime(),
+            (Float)((Int)(prevVopTimeStamp + lroundingCtrl)) ),
+            (Float)((Int)(auxVopTime + lroundingCtrl))  );
+
+        Float ltime = timeStamp - lrefTime + lroundingCtrl;
+
+        //time base in integer part
+        moduloTimeBase = (UInt)(ltime);
+
+        //time increment in fractional part
+        timeIncrement = (UInt)( (ltime - moduloTimeBase) * ltimeIncrRes );
+
+        // put number of seconds count
+        for( UInt mtb=0; mtb<moduloTimeBase; mtb++ )
+        {
+            ptrBitstream->PutBits( MARKER_BIT, 1 );
+        }
+        // marker for end of seconds count
+        ptrBitstream->PutBits( ZERO_BIT, 1 );
+
+        ptrBitstream->PutBits( MARKER_BIT, 1 );
+
+        // put fraction part of time detail
+        ptrBitstream->PutBits( timeIncrement, ptrVol->timeBitLength );
+
+        ptrBitstream->PutBits( MARKER_BIT, 1 );
+
+    }
+
+#endif
+
+long load_quant_matrix(unsigned char * mat_ram)
+{
+    int i;
+    unsigned char mat;
+    const int *scan;
+
+    scan = izgzg;
+
+    m4vae_putbits(1, 1);			// load_intra_quant_mat = 1
+    for (i=0;i<64;i++) {
+        mat = mat_ram[scan[i]];
+        m4vae_putbits(mat, 8);			// intra_matrix
+    }
+    m4vae_putbits(1, 1);			// load_nonintra_quant_mat = 1
+    for (i=0;i<64;i++) {
+        mat = mat_ram[scan[i]+64];
+        m4vae_putbits(mat, 8);			// inter_matrix
+    }
+
+    return 0;
+}
+
+// == end vol_encode.c
+    
+
